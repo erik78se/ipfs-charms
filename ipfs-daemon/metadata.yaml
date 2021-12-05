@@ -1,0 +1,12 @@
+name: ipfs-daemon
+display-name: IPFS deamon
+summary: A charm for IPFS
+maintainer: Erik Lönroth <erik.lonroth@gmail.com>
+description: |
+   Runs the IPFS daemon from snapstore
+tags:
+  - ops
+series:
+  - focal
+subordinate: false
+

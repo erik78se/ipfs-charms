@@ -1,0 +1,19 @@
+name: ipfs-cluster
+display-name: IPFS cluster
+summary: A charm for IPFS cluster
+maintainer: Erik Lönroth <erik.lonroth@gmail.com>
+description: |
+   Runs the IPFS cluster
+tags:
+  - ops
+series:
+  - focal
+subordinate: false
+
+peers:
+  peer:
+    interface: ipfs-cluster
+
+requires:
+  ipfs-daemon:
+    interface: ipfs-node    

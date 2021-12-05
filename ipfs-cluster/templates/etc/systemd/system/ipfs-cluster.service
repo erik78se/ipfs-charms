@@ -1,0 +1,20 @@
+# Deployed by Juju - don't edit.
+[Unit]
+Description=InterPlanetary File System (IPFS) cluster
+Documentation=https://docs.ipfs.io/
+After=network.target
+
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+ReadWritePaths="/var/lib/ipfs/"
+ExecStart=/bin/ipfs cluster --init --migrate
+Restart=on-failure
+KillSignal=SIGINT
+EnvironmentFile=-/etc/default/ipfs-cluster
+MemorySwapMax=0
+
+[Install]
+WantedBy=multi-user.target

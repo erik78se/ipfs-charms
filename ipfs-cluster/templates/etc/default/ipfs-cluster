@@ -1,0 +1,4 @@
+### Deployed by Juju - dont edit manually.
+
+# Start as cluster
+DAEMON_ARGS="cluster"

@@ -1,0 +1,12 @@
+# Copyright Erik Lönroth, <erik.lonroth@gmail.com>
+# License: Apache2
+
+options:
+  snap-channel:
+    type: string
+    default: "stable"
+    description: "Use this snap channel"
+  restart-on-reconfig:
+    type: boolean
+    default: false
+    description: "Restart service on reconfig or not"

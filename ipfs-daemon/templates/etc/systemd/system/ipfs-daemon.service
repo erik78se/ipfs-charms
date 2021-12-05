@@ -1,0 +1,19 @@
+# Deployed by Juju - don't edit.
+[Unit]
+Description=InterPlanetary File System (IPFS) daemon
+Documentation=https://docs.ipfs.io/
+After=network.target
+
+
+[Service]
+EnvironmentFile=-/etc/default/ipfs
+ExecStart=/snap/bin/ipfs $CUSTOM_ARGS
+Type=simple
+User=ubuntu
+Group=ubuntu
+Restart=on-failure
+KillSignal=SIGINT
+MemorySwapMax=0
+
+[Install]
+WantedBy=multi-user.target

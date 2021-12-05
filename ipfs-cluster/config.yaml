@@ -1,0 +1,12 @@
+# Copyright Erik Lönroth, <erik.lonroth@gmail.com>
+# License: Apache2
+
+options:
+  sources-uri:
+    type: string
+    default: "https://dist.ipfs.io/ipfs-cluster-service/v0.14.1/ipfs-cluster-service_v0.14.1_linux-amd64.tar.gz"
+    description: "URI to tar.gz with ipfs-cluster-service"
+  restart-on-reconfig:
+    type: boolean
+    default: false
+    description: "Restart service on reconfig or not"
