@@ -10,3 +10,6 @@ series:
   - focal
 subordinate: false
 
+provides:
+  ipfs:
+    interface: http

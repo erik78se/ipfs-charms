@@ -1,18 +1,18 @@
 # Deployed by Juju - don't edit.
 [Unit]
-Description=InterPlanetary File System (IPFS) cluster
+Description=InterPlanetary File System (IPFS) daemon
 Documentation=https://docs.ipfs.io/
 After=network.target
 
 
 [Service]
+EnvironmentFile=-/etc/default/ipfs
+ExecStart=/opt/ipfs/go-ipfs $CUSTOM_ARGS
 Type=simple
 User=ubuntu
 Group=ubuntu
-ExecStart=/opt/ipfs/ipfs-cluster-service/ipfs-cluster-service daemon
 Restart=on-failure
 KillSignal=SIGINT
-EnvironmentFile=-/etc/default/ipfs-cluster
 MemorySwapMax=0
 
 [Install]

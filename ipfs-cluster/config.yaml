@@ -2,10 +2,14 @@
 # License: Apache2
 
 options:
-  sources-uri:
+  service-sources-uri:
     type: string
     default: "https://dist.ipfs.io/ipfs-cluster-service/v0.14.1/ipfs-cluster-service_v0.14.1_linux-amd64.tar.gz"
     description: "URI to tar.gz with ipfs-cluster-service"
+  ctl-sources-uri:
+    type: string
+    default: "https://dist.ipfs.io/ipfs-cluster-ctl/v0.14.1/ipfs-cluster-ctl_v0.14.1_linux-amd64.tar.gz"
+    description: "URI to tar.gz with ipfs-cluster-ctl" 
   restart-on-reconfig:
     type: boolean
     default: false
