@@ -10,8 +10,10 @@ from ops.charm import CharmBase
 from ops.framework import StoredState
 from ops.main import main
 from ops.model import ActiveStatus, WaitingStatus, MaintenanceStatus
-import subprocess as sp
+import subprocess
 import sys
+
+import utils
 
 logger = logging.getLogger(__name__)
 
@@ -128,6 +130,9 @@ class IPFSCharm(CharmBase):
             logger.info(f"ipfs-daemon service is running.")
             self.unit.status = ActiveStatus("Running.")
 
+        if self.model.unit.is_leader():
+                self.unit.set_workload_version(utils.getIpfsVersion())
+            
     def _on_upgrade_charm(self, event):
         logger.debug(EMOJI_CORE_HOOK_EVENT + sys._getframe().f_code.co_name)
 

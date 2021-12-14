@@ -21,6 +21,3 @@ def getIpfsClusterVersion():
     resp = subprocess.check_output(['/opt/ipfs/ipfs-cluster-service/ipfs-cluster-service','--version']).decode()
     return resp.rstrip().rpartition(' ')[-1] # Get the version
 
-def getIpfsVersion():
-    resp = subprocess.check_output(['ipfs','--version']).decode()
-    return resp.rstrip().rpartition(' ')[-1] # Get the version
