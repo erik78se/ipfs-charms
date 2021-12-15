@@ -10,11 +10,11 @@ import requests
 from ops.charm import CharmBase
 from ops.framework import StoredState
 from ops.main import main
-from ops.model import ActiveStatus, WaitingStatus, MaintenanceStatus
+from ops.model import ActiveStatus, BlockedStatus, WaitingStatus, MaintenanceStatus
 import subprocess
 import sys
 import jinja2
-
+import json
 import utils
 
 logger = logging.getLogger(__name__)
@@ -41,22 +41,23 @@ class IPFSClusterCharm(CharmBase):
         self.framework.observe(self.on.config_changed, self._on_config_changed)
         self.framework.observe(self.on.start, self._on_start)
         self.framework.observe(self.on.leader_elected, self._on_leader_elected)
-        self.framework.observe(self.on.leader_settings_changed, self._on_leader_settings_changed)
-        self.framework.observe(self.on.stop, self._on_stop)
-        self.framework.observe(self.on.remove, self._on_remove)
         self.framework.observe(self.on.stop, self._on_stop)
         self.framework.observe(self.on.update_status, self._on_update_status)
-        self.framework.observe(self.on.collect_metrics, self._on_collect_metrics)
-        self.framework.observe(self.on.upgrade_charm, self._on_upgrade_charm)
-        # peer
-        self.framework.observe(self.on.cluster_relation_joined, self._on_cluster_relation_joined)
-        self.framework.observe(self.on.cluster_relation_departed, self._on_cluster_relation_departed)
-        self.framework.observe(self.on.cluster_relation_changed, self._on_cluster_relation_changed)
+
+
+        # Peer relation
+        self.framework.observe(self.on.replicas_relation_joined, self._on_replicas_relation_joined)
+        self.framework.observe(self.on.replicas_relation_departed, self._on_replicas_relation_departed)
+        self.framework.observe(self.on.replicas_relation_changed, self._on_replicas_relation_changed)
 
 
         self._stored.set_default(service_sources_uri=self.config["service-sources-uri"],
                                  ctl_sources_uri=self.config["ctl-sources-uri"],
-                                 restart_on_reconfig=self.config["restart-on-reconfig"])
+                                 restart_on_reconfig=self.config["restart-on-reconfig"],
+                                 leader_ip=None,
+                                 cluster_secret=None,
+                                 identity_id=None,
+                                 has_peers=False)
 
 
     def _on_install(self, event):
@@ -73,31 +74,26 @@ class IPFSClusterCharm(CharmBase):
         utils.fetch_and_extract_sources(self._stored.service_sources_uri, IPFS_HOME)
         
         shutil.copyfile('templates/etc/systemd/system/ipfs-cluster.service', '/etc/systemd/system/ipfs-cluster.service')
-        
-        # (re)config
-        self._reconfig_ipfs_cluster(restart=False)
+
+        # Do the init - produces the service.json and other configs
+        # ./ipfs-cluster-service init
+        # configuration written to /home/ubuntu/.ipfs-cluster/service.json
+        # new identity written to /home/ubuntu/.ipfs-cluster/identity.json
+        # new empty peerstore written to /home/ubuntu/.ipfs-cluster/peerstore
+        os.system('sudo -u ubuntu /opt/ipfs/ipfs-cluster-service/ipfs-cluster-service init --force')
 
 
     def _on_config_changed(self, event):
         """
-        Deal with charm configuration changes here.
-
-        Detect changes to individual config items, by storing and comparing values in self._stored
-
-        This hook is run after the start hook.
-        This hook run after the upgrade-charm hook.
-        This hook is run after the leader-elected hook.
+        Update configs.
         """
         logger.debug(EMOJI_CORE_HOOK_EVENT + sys._getframe().f_code.co_name)
-
-        if self.config["ctl-sources-uri"] != self._stored.ctl_sources_uri:
-            self._stored.ctl_sources_uri = self.config["ctl-sources-uri"]
-            self._reconfig_ipfs_cluster(restart=self.config["restart-on-reconfig"])
-
-        if self.config["service-sources-uri"] != self._stored.service_sources_uri:
-            self._stored.service_sources_uri = self.config["service-sources-uri"]
-            self._reconfig_ipfs_cluster(restart=self.config["restart-on-reconfig"])
-            
+        if not self._stored.cluster_secret:
+            self.unit.status = BlockedStatus("Missing secret for config.")
+            logger.error("Hold up start, missing cluster secret.")
+        else:
+            utils.write_service_json({'cluster_secret': self._stored.cluster_secret})
+        
         self._on_update_status(event)
 
     def _on_start(self, event):
@@ -106,8 +102,26 @@ class IPFSClusterCharm(CharmBase):
         """
         logger.debug(EMOJI_CORE_HOOK_EVENT + sys._getframe().f_code.co_name)
         logger.info(f"{EMOJI_GREEN_DOT} Starting ipfs-cluster.service")
-        os.system('systemctl start ipfs-cluster.service')
 
+        # If no peers, just start as we are.
+        if self.model.unit.is_leader():
+            os.system('systemctl start ipfs-cluster.service')
+        else:
+            # Wait until there is a peerstore file
+            if not self._stored.has_peers:
+                self.unit.status = BlockedStatus("Has no peers.")
+                logger.info("Hold up start, waiting for peerstore file.")
+                event.defer()
+                return
+            elif not self._stored.cluster_secret:
+                self.unit.status = BlockedStatus("Missing secret for config.")
+                logger.info("Hold up start, missing cluster secret.")
+                event.defer()
+                return
+            else:
+                utils.write_service_json({'cluster_secret': self._stored.cluster_secret})
+                os.system('systemctl start ipfs-cluster.service')
+            
         # Calling update_status gives quick feedback when deploying starts up.
         self._on_update_status(event)
         self.unit.set_workload_version(utils.getIpfsClusterVersion())
@@ -118,19 +132,22 @@ class IPFSClusterCharm(CharmBase):
             This is only run on the unit which is selected by juju as leader.
         """
         logger.debug(EMOJI_CORE_HOOK_EVENT + sys._getframe().f_code.co_name)
-        os.system('sudo -u ubuntu /opt/ipfs/ipfs-cluster-service/ipfs-cluster-service init --force')
-        
-    def _on_leader_settings_changed(self, event):
-        """
-            This is only run on the unit which is selected by juju as leader.
-        """
-        logger.debug(EMOJI_CORE_HOOK_EVENT + sys._getframe().f_code.co_name)
+        peer_relation = self.model.get_relation("replicas")
+        ip = str(self.model.get_binding(peer_relation).network.bind_address)
+
+        # Pick up values from generated files if we don't have it stored.
+        if not self._stored.cluster_secret:
+            self._stored.cluster_secret = utils.get_cluster_secret()
+        if not self._stored.identity_id:
+            self._stored.identity_id = utils.get_identity_id()
+            
+        peer_relation.data[self.app].update({"leader-ip": ip})
+        peer_relation.data[self.app].update({"secret": self._stored.cluster_secret})
+        peer_relation.data[self.app].update({"id": self._stored.identity_id})
 
     def _on_update_status(self, event):
         """
-            This runs every 5 minutes.
-
-            Have one place to figure out status for the charm is a good strategy for a beginner charmer.
+        Tell the world.
         """
         logger.debug(EMOJI_CORE_HOOK_EVENT + sys._getframe().f_code.co_name)
 
@@ -143,12 +160,6 @@ class IPFSClusterCharm(CharmBase):
 
         if self.model.unit.is_leader():
                 self.unit.set_workload_version(utils.getIpfsClusterVersion())
-
-            
-    def _on_upgrade_charm(self, event):
-        logger.debug(EMOJI_CORE_HOOK_EVENT + sys._getframe().f_code.co_name)
-
-        shutil.copyfile('templates/etc/systemd/system/ipfs-cluster.service', '/etc/systemd/system/ipfs-cluster.service')
         
     def _on_stop(self, event):
         """
@@ -160,74 +171,88 @@ class IPFSClusterCharm(CharmBase):
         os.system('systemctl stop ipfs-cluster.service')
 
 
-    def _on_remove(self, event):
-        """
-        Remove stuff you might want to clean up.
-
-        This hook is run after the stop hook.
-        """
+    def _on_replicas_relation_joined(self, event):
         logger.debug(EMOJI_CORE_HOOK_EVENT + sys._getframe().f_code.co_name)
 
-        logger.info(f"Removing ipfs {EMOJI_PACKAGE}")
-#        os.system('snap remove ipfs')
+        """Handle relation-joined event for the replicas relation"""
+        logger.debug("Hello from %s to %s", self.unit.name, event.unit.name)
 
+        # Check if we're the leader, meaning we are responsible
+        # for sending config. No peerstore expected to exists for
+        # leader, so only set local store values.
+        if self.unit.is_leader():
+            ip = str(self.model.get_binding(event.relation).network.bind_address)
+            logging.debug("Leader %s setting some data!", self.unit.name)
+            event.relation.data[self.app].update({"leader-ip": ip})
+            event.relation.data[self.app].update({"secret": self._stored.cluster_secret})
+            event.relation.data[self.app].update({"id": str(self._stored.identity_id)})
+        else:
+                self.writePeerStore()
+                self._stored.has_peers = True
 
-    def _on_collect_metrics(self, event):
-        """
-        This runs every 5 minutes - if metrics are defined in metrics.yaml.
+    def _on_replicas_relation_departed(self, event):
+        logger.debug(EMOJI_CORE_HOOK_EVENT + sys._getframe().f_code.co_name)
+        logger.debug("Goodbye from %s to %s", self.unit.name, event.unit.name)
 
-        We don't implement any metrics this in this charm. See the metrics charm for a working example.
-        """
+    def _on_replicas_relation_changed(self, event):
         logger.debug(EMOJI_CORE_HOOK_EVENT + sys._getframe().f_code.co_name)
 
+        logging.debug("Unit %s can see the following data: %s", self.unit.name, event.relation.data.keys())
+        # {'egress-subnets': '10.166.0.21/32',
+        #  'ingress-address': '10.166.0.21',
+        #  'private-address': '10.166.0.21',
+        #  'unit-data': 'ipfs-cluster/0'},
+        #  <ops.model.Application ipfs-cluster>:
+        #    {'id': 'someid',
+        #     'leader-ip': '10.166.0.21',
+        #     'secret': 'somesecret'},
+        #  <ops.model.Unit ipfs-cluster/1>:
+        #    {'egress-subnets': '10.166.0.20/32',
+        #     'ingress-address': '10.166.0.20',
+        #     'private-address': '10.166.0.20',
+        #     'unit-data': 'ipfs-cluster/1'}}
 
-    def _on_cluster_relation_joined(self, event):
-        logger.debug(EMOJI_CORE_HOOK_EVENT + sys._getframe().f_code.co_name)
-        pass
+        # Fetch an item from the application data bucket
+        leader_ip_value = event.relation.data[self.app].get("leader-ip")
+        cluster_secret = event.relation.data[self.app]['secret']
+        identity_id = event.relation.data[self.app]['id']
 
-    def _on_cluster_relation_departed(self, event):
-        logger.debug(EMOJI_CORE_HOOK_EVENT + sys._getframe().f_code.co_name)
-        pass
-
-    def _on_cluster_relation_changed(self, event):
-        logger.debug(EMOJI_CORE_HOOK_EVENT + sys._getframe().f_code.co_name)
-        pass
-
-    def _ipfs_init(self):
-        """
-        ./ipfs-cluster-service init
-        2021-12-05T16:16:47.604Z	INFO	config	config/config.go:481	Saving configuration
-        configuration written to /home/ubuntu/.ipfs-cluster/service.json.
-        2021-12-05T16:16:47.607Z	INFO	config	config/identity.go:73	Saving identity
-        new identity written to /home/ubuntu/.ipfs-cluster/identity.json
-        new empty peerstore written to /home/ubuntu/.ipfs-cluster/peerstore.
-        """
-        os.chdir(f"{IPFS_SERVICE}")
-        os.system('./ipfs-cluster-service init')
+        valid_relation = True
         
-    def _reconfig_ipfs_cluster(self, restart=False):
-        """
-        Reconfigures the startup parameters of hello.service by modifying the /etc/default/ipfs-cluster file.
-        Reloads systemd daemons.
-
-        Optionally, restart the service.
-        """
-        logger.info(f"{EMOJI_MESSAGE} Re-Configuring")
+        # Store the latest copy of data locally in our state store
+        if leader_ip_value and leader_ip_value != self._stored.leader_ip:
+            self._stored.leader_ip = leader_ip_value
+        else:
+            valid_relation = False
         
-        template = jinja2.Environment(
-            loader=jinja2.FileSystemLoader(
-                os.path.join(self.charm_dir, 'templates/etc/default/'))).get_template('ipfs-cluster.j2') 
-        target = Path('/etc/default/ipfs-cluster')
-        ctx = {'peername': 'peeeeeername',
-               'secret': 'seeeeecret',
-               'cluster_id': 'cluster_iiiiiiid'}
-        target.write_text(template.render(ctx))
-        
-        os.system('systemctl daemon-reload')
+        if cluster_secret and cluster_secret != self._stored.cluster_secret:
+            self._stored.cluster_secret = cluster_secret
+        else:
+            valid_relation = False
+            
+        if identity_id and identity_id != self._stored.identity_id:
+            self._stored.identity_id = identity_id
+        else:
+            valid_relation = False
 
-        if restart:
-            logger.info(f"{EMOJI_GREEN_DOT} Restarting ipfs-cluster.")
-            os.system('systemctl restart ipfs-cluster.service')
+        # In case we dont have all data needed to write config
+        # and start with that, lets defer() and wait.
+        if not valid_relation:
+            event.defer()
+            return
+
+    def writePeerStore(self):
+        """
+        Write peerstore to file
+        """
+        peer_relation = self.model.get_relation("replicas")
+        identity_id = self._stored.identity_id
+            
+        with open("/home/ubuntu/.ipfs-cluster/peerstore", "w+") as peerstoreFile:
+            for peer in peer_relation.units:
+                peer_ip = peer_relation.data[peer].get("ingress-address")
+                peerstoreFile.write(f"/ip4/{peer_ip}/tcp/9096/p2p/{identity_id}\n")
+        
 
             
 if __name__ == "__main__":

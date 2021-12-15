@@ -16,6 +16,12 @@ requires:
     interface: http
     scope: container
 
+provides:
+  web:
+    interface: http
+  proxy:
+    interface: http
+
 peers:
-  cluster:
-    interface: ipfs-identity
+  replicas:
+    interface: ipfs
